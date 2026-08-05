@@ -1,0 +1,24 @@
+{
+    "ar": {
+        "menu_1": "1. فحص الشبكة المحلية (Network Scanner - ARP)",
+        "menu_2": "2. فحص موقع/سيرفر خارجي (Website/Server Banner Grabbing)",
+        "menu_3": "3. فحص المنافذ المفتوحة (Deep Port Scanner)",
+        "menu_4": "4. تغيير اللغة ",
+        "menu_5": "5. خروج من الرادار (Exit)",
+        "prompt_choice": "\nاختر نوع الرادار (1-5): ",
+        "prompt_lang": "اختر الرقم / Choose number: ",
+        "invalid_choice": "[-] اختيار غير صالح. جرب مرة أخرى.",
+        "goodbye": "\n[+] تم إنهاء الجلسة بنجاح. وداعاً يا Aboody!"
+    },
+    "en": {
+        "menu_1": "1. Local Network Scanner (ARP)",
+        "menu_2": "2. Website/Server Scanner (Banner Grabbing)",
+        "menu_3": "3. Deep Port Scanner",
+        "menu_4": "4. Change Language ",
+        "menu_5": "5. Exit Radar",
+        "prompt_choice": "\nChoose Radar Type (1-5): ",
+        "prompt_lang": "Choose number: ",
+        "invalid_choice": "[-] Invalid choice. Try again.",
+        "goodbye": "\n[+] Session ended successfully. Goodbye Aboody!"
+    }
+}
