@@ -1,4 +1,4 @@
-<div>
+<div dir="ltr">
 
 
 ```text
@@ -11,7 +11,7 @@
           R  A  D  A  R   V 1.0              
            -= FROM ABOODY =-    
 ```
-<div>
+</div>
 
 <div dir="rtl">
 
