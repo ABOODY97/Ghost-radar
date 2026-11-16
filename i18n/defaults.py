@@ -1,0 +1,285 @@
+import scapy.all as scapy
+import requests
+import time
+import socket
+import concurrent.futures
+import sys
+import os
+import json
+import ssl
+import datetime
+import ipaddress
+import zlib
+import html
+import re
+import unicodedata
+import random
+import base64
+import binascii
+import hashlib
+import hmac
+import uuid
+from urllib.parse import urlparse
+
+# ويندوز: الطرفية افتراضياً cp1252/cp437 فتنهار الطباعة عند أول حرف عربي أو
+# إطار Unicode؛ نعيد ضبط stdout/stderr على UTF-8 قبل أي طباعة.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding='utf-8', errors='replace')
+    except (AttributeError, ValueError, OSError):
+        pass
+os.environ.setdefault('PYTHONIOENCODING', 'utf-8')
+try:
+    if os.name == 'nt':
+        os.system('')  # يفعّل معالجة ANSI VT في console ويندوز (ألوان واضحة بدل أكواد)
+except OSError:
+    pass
+
+from arabic_tools import fix_ar
+
+try:
+    import dns.resolver
+    DNS_AVAILABLE = True
+except ImportError:
+    DNS_AVAILABLE = False
+
+# ---------------- طبقة تشفير البيانات الحساسة (IP الجهاز، السجلات) ----------------
+try:
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    CRYPTO_AVAILABLE = True
+except ImportError:  # احتياطي: نستخدم AES-GCM إن توفرت، وإلا نمنع التخزين الصريح
+    AESGCM = None
+    CRYPTO_AVAILABLE = False
+
+
+from config import *
+
+DEFAULT_LANGUAGES = {
+    "ar": {
+        "menu_1": "1. فحص الشبكة المحلية (Network Scanner - ARP)",
+        "menu_2": "2. فحص موقع/سيرفر خارجي (Website/Server Recon)",
+        "menu_3": "3. فحص المنافذ المفتوحة (Deep Port Scanner)",
+        "menu_4": "4. توليد تقرير شامل (JSON/HTML)",
+        "menu_5": "5. تغيير اللغة",
+        "menu_8": "8. فك تشفير تقرير/سجل محفوظ (Unseal Report)",
+        "unseal_none": "[-] لا توجد تقارير أو سجل في المجلد الحالي.",
+        "unseal_list": "اختر الملف المطلوب فك تشفيره:",
+        "unseal_prompt": "\nرقم الملف: ",
+        "unseal_fail": "[-] فشل فك التشفير: مفتاح مختلف أو ملف تالف.",
+        "unseal_ok": "[+] تم فك التشفير وحفظ الناتج: {0}",
+        "menu_6": "6. خروج من الرادار (Exit)",
+        "prompt_choice": "\nاختر نوع الرادار (1-8): ",
+        "invalid_choice": "[-] اختيار غير صالح. جرب مرة أخرى.",
+        "goodbye": "\n[+] تم إنهاء الجلسة بنجاح. وداعاً يا Aboody!",
+        "lang_switched": "\n[+] تم التبديل إلى اللغة العربية!",
+        "ctrl_c": "\n\n[!] تم رصد إشارة Ctrl+C! جاري إيقاف الرادار وإخفاء الآثار...",
+        "net_mode_prompt": "\nاختر طريقة الفحص:\n1. عرض IP الأجهزة المتصلة بشبكتي (سريع وتلقائي)\n2. فحص شامل (تحليل عميق للأجهزة)",
+        "net_prompt": "أدخل نطاق الشبكة للفحص الشامل (مثال: 192.168.1.1/24) — اتركه فارغاً للاكتشاف التلقائي: ",
+        "net_scan": "\n[*] جاري مسح الشبكة وإجراء التحليل العميق لـ {}... يرجى الانتظار.",
+        "net_off": "[-] هذا الأيبي {} غير نشط أو غير موجود",
+        "net_found": "\n[+] تم العثور على {} أجهزة. جاري تحليل البصمات...",
+        "net_detecting": "\n[*] جاري اكتشاف الأجهزة على شبكتك ({})... يرجى الانتظار.",
+        "net_auto_fail": "[-] تعذّر اكتشاف شبكتك المحلية تلقائياً. تأكد من اتصالك بالشبكة.",
+        "devices_title": "\n[+] الأجهزة المتصلة بشبكتك: {}",
+        "devices_you": "أنت",
+        "devices_none": "[-] لم يتم العثور على أي جهاز آخر على الشبكة.",
+        "pick_device": "اختر رقم الجهاز (أو اكتب الأيبي مباشرة): ",
+        "web_prompt": "أدخل رابط الموقع أو الأيبي للسيرفر (مثال: google.com): ",
+        "web_scanning": "\n[*] جاري إرسال طلب استطلاع إلى {}...",
+        "web_success": "\n[+] تم اختراق واجهة السيرفر وجمع البيانات بنجاح!",
+        "web_bad_domain": "[-] خطأ: الدومين غير صحيح أو لا يمكن تحويله إلى IP.",
+        "web_conn_fail": "[-] فشل الاتصال بالسيرفر: {}",
+        "port_target_mode": "\nاختر الهدف:\n1. إدخال الأيبي/الرابط يدوياً\n2. اختيار جهاز من الأجهزة المتصلة بشبكتي",
+        "port_prompt": "أدخل الأيبي أو رابط الموقع لفحص منافذه (مثال: 192.168.1.1): ",
+        "port_profile_prompt": "\nاختر نطاق الفحص:\n1. سريع (12 منفذ شائع)\n2. موسّع (~80 منفذ)\n3. مخصص (أدخل نطاق أو أرقام منافذ)",
+        "port_custom_prompt": "أدخل المنافذ (مثال: 1-1000 أو 22,80,443): ",
+        "port_limited": "[!] تم تحديد الفحص إلى أول {} منفذ لتفادي التحميل الزائد على الشبكة.",
+        "port_bad_target": "[-] خطأ: لا يمكن تحويل الهدف إلى IP.",
+        "port_scanning": "\n[*] جاري توجيه رادار المنافذ لفحص {} ({} منفذ)...",
+        "port_done": "\n[+] اكتمل المسح التكتيكي! تحليل المنافذ:",
+        "port_protected": " (محمي)",
+        "banner_found": "البصمة",
+        "cve_checking": "\n[*] جاري التحقق من ثغرات معروفة عبر قاعدة NVD الرسمية (قد يستغرق بعض الوقت)...",
+        "cve_found": "  [!] ثغرات محتملة مرتبطة بالبصمة '{}':",
+        "cve_rate_limited": "  [-] تم تجاوز حد الطلبات لقاعدة NVD، حاول لاحقاً أو استخدم مفتاح API.",
+        "ssl_info_title": "\n[*] معلومات شهادة SSL/TLS:",
+        "ssl_issuer": "الجهة المصدرة",
+        "ssl_expires": "تنتهي في",
+        "ssl_days_left": "الأيام المتبقية",
+        "ssl_protocol": "البروتوكول",
+        "ssl_expired_warning": "  [!] تحذير: الشهادة منتهية الصلاحية!",
+        "ssl_expiring_soon": "  [!] تحذير: الشهادة قاربت على الانتهاء!",
+        "ssl_unavailable": "  [-] لا يمكن جلب معلومات الشهادة (لا يدعم HTTPS أو فشل الاتصال).",
+        "dns_title": "\n[*] سجلات DNS:",
+        "dns_missing_lib": "  [-] مكتبة dnspython غير مثبتة. للتفعيل: pip install dnspython",
+        "dns_none": "لا يوجد",
+        "subs_title": "\n[*] البحث عن نطاقات فرعية (Certificate Transparency)...",
+        "subs_found": "\n[+] تم العثور على {} نطاق فرعي:",
+        "subs_none": "  [-] لم يتم العثور على نطاقات فرعية.",
+        "new_device": "\n  [!!!] تنبيه: جهاز/أجهزة جديدة لم تكن موجودة في الفحص السابق:",
+        "missing_device": "\n[*] أجهزة كانت موجودة سابقاً واختفت الآن:",
+        "report_generating": "\n[*] جاري توليد التقرير...",
+        "report_saved": "[+] تم حفظ التقرير بنجاح:\n    JSON: {}\n    HTML: {}",
+        "report_empty": "[-] لا توجد بيانات فحص بعد في هذه الجلسة. قم بإجراء فحص أولاً.",
+        "menu_7": "7. وضع الشبح (الخفي) — تشغيل/إيقاف",
+        "ghost_on": "\n[+] تم تفعيل وضع الشبح: MAC شبح ثابت، Timestamp متدرّج، مسح مجزأ عشوائياً، MAC وهمي على الطبقة 2، وإخفاء اسم العملية.",
+        "ghost_off": "\n[!] تم إيقاف وضع الشبح — الفحص الآن عادي.",
+        "ghost_status": "[i] وضع الشبح: ",
+        "ghost_egress_note": "[i] تذكير: لعزل الاستعلامات الخارجية عن IP الحقيقي شغّل: set GHOST_PROXY=socks5h://127.0.0.1:9050 (Tor) أو set GHOST_NO_EXTERNAL=1",
+        "external_blocked": "[-] تم منع الاتصال الخارجي (GHOST_NO_EXTERNAL=1). لا يمكن استطلاع الموقع.",
+        "ssl_proxy_blocked": "  [-] لا يمكن فحص الشهادة: البروكسي غير متاح وفحص SSL المباشر محظور (لتجنب كشف IP).",
+        "doh_failed": "  [!] فشل حل الاسم عبر DoH/البروكسي — لم يتم استخدام DNS المحلي لتجنب التسريب."
+    },
+    "en": {
+        "menu_1": "1. Local Network Scanner (ARP)",
+        "menu_2": "2. Website/Server Recon",
+        "menu_3": "3. Deep Port Scanner",
+        "menu_4": "4. Generate Full Report (JSON/HTML)",
+        "menu_5": "5. Change Language",
+        "menu_8": "8. Unseal a saved report/history",
+        "unseal_none": "[-] No reports or history in the current folder.",
+        "unseal_list": "Pick the file to unseal:",
+        "unseal_prompt": "\nFile number: ",
+        "unseal_fail": "[-] Unseal failed: wrong key or corrupt file.",
+        "unseal_ok": "[+] Decrypted and saved to: {0}",
+        "menu_6": "6. Exit Radar",
+        "prompt_choice": "\nChoose Radar Type (1-8): ",
+        "invalid_choice": "[-] Invalid choice. Try again.",
+        "goodbye": "\n[+] Session ended successfully. Goodbye Aboody!",
+        "lang_switched": "\n[+] Switched to English successfully!",
+        "ctrl_c": "\n\n[!] Ctrl+C detected! Shutting down the radar and cleaning up...",
+        "net_mode_prompt": "\nChoose scan mode:\n1. Show IPs of devices connected to my network (quick, automatic)\n2. Full scan (deep device analysis)",
+        "net_prompt": "Enter network range to scan (e.g., 192.168.1.1/24) — leave empty to auto-detect: ",
+        "net_scan": "\n[*] Scanning and analyzing {}... Please wait.",
+        "net_off": "[-] IP {} is offline or unreachable.",
+        "net_found": "\n[+] Found {} devices. Analyzing fingerprints...",
+        "net_detecting": "\n[*] Discovering devices on your network ({})... Please wait.",
+        "net_auto_fail": "[-] Could not auto-detect your local network. Check your connection.",
+        "devices_title": "\n[+] Devices connected to your network: {}",
+        "devices_you": "You",
+        "devices_none": "[-] No other devices found on the network.",
+        "pick_device": "Pick a device number (or type an IP directly): ",
+        "web_prompt": "Enter website URL or Server IP (e.g., google.com): ",
+        "web_scanning": "\n[*] Sending recon request to {}...",
+        "web_success": "\n[+] Server interface reached and data collected successfully!",
+        "web_bad_domain": "[-] Error: invalid domain or it cannot be resolved to an IP.",
+        "web_conn_fail": "[-] Failed to connect to the server: {}",
+        "port_target_mode": "\nChoose the target:\n1. Enter an IP/URL manually\n2. Pick a device from those connected to my network",
+        "port_prompt": "Enter IP or URL for port scan (e.g., 192.168.1.1): ",
+        "port_profile_prompt": "\nChoose scan profile:\n1. Quick (12 common ports)\n2. Extended (~80 ports)\n3. Custom (enter a range or port list)",
+        "port_custom_prompt": "Enter ports (e.g., 1-1000 or 22,80,443): ",
+        "port_limited": "[!] Scan limited to the first {} ports to avoid overloading the network.",
+        "port_bad_target": "[-] Error: cannot resolve the target to an IP.",
+        "port_scanning": "\n[*] Pointing the port radar at {} ({} ports)...",
+        "port_done": "\n[+] Tactical scan complete! Port analysis:",
+        "port_protected": " (Protected)",
+        "banner_found": "Banner",
+        "cve_checking": "\n[*] Checking known vulnerabilities via the official NVD database (this may take a moment)...",
+        "cve_found": "  [!] Potential CVEs linked to banner '{}':",
+        "cve_rate_limited": "  [-] NVD rate limit reached, try again later or use an API key.",
+        "ssl_info_title": "\n[*] SSL/TLS Certificate Info:",
+        "ssl_issuer": "Issuer",
+        "ssl_expires": "Expires",
+        "ssl_days_left": "Days Remaining",
+        "ssl_protocol": "Protocol",
+        "ssl_expired_warning": "  [!] WARNING: Certificate EXPIRED!",
+        "ssl_expiring_soon": "  [!] WARNING: Certificate expiring soon!",
+        "ssl_unavailable": "  [-] Could not retrieve certificate info (no HTTPS or connection failed).",
+        "dns_title": "\n[*] DNS Records:",
+        "dns_missing_lib": "  [-] dnspython not installed. Enable via: pip install dnspython",
+        "dns_none": "None",
+        "subs_title": "\n[*] Searching subdomains (Certificate Transparency)...",
+        "subs_found": "\n[+] Found {} subdomains:",
+        "subs_none": "  [-] No subdomains found.",
+        "new_device": "\n  [!!!] ALERT: New device(s) not seen in the previous scan:",
+        "missing_device": "\n[*] Devices seen before, now missing:",
+        "report_generating": "\n[*] Generating report...",
+        "report_saved": "[+] Report saved successfully:\n    JSON: {}\n    HTML: {}",
+        "report_empty": "[-] No scan data yet this session. Run a scan first.",
+        "menu_7": "7. Ghost Mode (Stealth) — On/Off",
+        "eof_exit": "\n[!] Input closed (no terminal) — stopping the radar.",
+        "ghost_on": "\n[+] Ghost mode enabled: sticky ghost MAC, graduated TCP timestamps, random batching, fake L2 MAC, process name hidden.",
+        "ghost_off": "\n[!] Ghost mode disabled — normal scans now.",
+        "ghost_status": "[i] Ghost mode: ",
+        "ghost_egress_note": "[i] Tip: to keep external lookups off your real IP run: set GHOST_PROXY=socks5h://127.0.0.1:9050 (Tor) or set GHOST_NO_EXTERNAL=1",
+        "external_blocked": "[-] Outgoing traffic blocked (GHOST_NO_EXTERNAL=1). Cannot recon the website.",
+        "ssl_proxy_blocked": "  [-] Certificate check unavailable: proxy unreachable and direct TLS is blocked to avoid IP exposure.",
+        "doh_failed": "  [!] DoH/proxy resolution failed — local DNS not used to prevent leakage."
+    },
+    "tr": {
+        "menu_1": "1. Yerel Ağ Tarayıcı (ARP)",
+        "menu_2": "2. Web Sitesi/Sunucu Keşfi",
+        "menu_3": "3. Derin Port Tarayıcı",
+        "menu_4": "4. Tam Rapor Oluştur (JSON/HTML)",
+        "menu_5": "5. Dili Değiştir",
+        "menu_8": "8. Kayıtlı raporu/geçmişi şifreden çıkar",
+        "unseal_none": "[-] Bu klasörde rapor veya geçmiş yok.",
+        "unseal_list": "Şifresi çözülecek dosyayı seçin:",
+        "unseal_prompt": "\nDosya numarası: ",
+        "unseal_fail": "[-] Şifre çözme başarısız: yanlış anahtar veya bozuk dosya.",
+        "unseal_ok": "[+] Şifre çözüldü, kaydedildi: {0}",
+        "menu_6": "6. Radardan Çık",
+        "prompt_choice": "\nRadar türünü seçin (1-8): ",
+        "invalid_choice": "[-] Geçersiz seçim. Tekrar deneyin.",
+        "goodbye": "\n[+] Oturum başarıyla sonlandırıldı. Hoşça kal Aboody!",
+        "lang_switched": "\n[+] Türkçe diline başarıyla geçildi!",
+        "ctrl_c": "\n\n[!] Ctrl+C algılandı! Radar durduruluyor ve temizlik yapılıyor...",
+        "net_mode_prompt": "\nTarama modunu seçin:\n1. Ağıma bağlı cihazların IP'lerini göster (hızlı, otomatik)\n2. Tam tarama (derin cihaz analizi)",
+        "net_prompt": "Taranacak ağ aralığını girin (örn: 192.168.1.1/24) — boş bırakırsanız otomatik algılanır: ",
+        "net_scan": "\n[*] {} taranıyor ve derin analiz yapılıyor... Lütfen bekleyin.",
+        "net_off": "[-] {} IP adresi aktif değil veya ulaşılamıyor.",
+        "net_found": "\n[+] {} cihaz bulundu. Parmak izleri analiz ediliyor...",
+        "net_detecting": "\n[*] Ağınızdaki cihazlar keşfediliyor ({})... Lütfen bekleyin.",
+        "net_auto_fail": "[-] Yerel ağınız otomatik algılanamadı. Bağlantınızı kontrol edin.",
+        "devices_title": "\n[+] Ağınıza bağlı cihazlar: {}",
+        "devices_you": "Siz",
+        "devices_none": "[-] Ağda başka cihaz bulunamadı.",
+        "pick_device": "Cihaz numarasını seçin (veya doğrudan IP yazın): ",
+        "web_prompt": "Web sitesi URL'sini veya sunucu IP'sini girin (örn: google.com): ",
+        "web_scanning": "\n[*] {} adresine keşif isteği gönderiliyor...",
+        "web_success": "\n[+] Sunucu arayüzüne ulaşıldı ve veriler başarıyla toplandı!",
+        "web_bad_domain": "[-] Hata: Alan adı geçersiz veya IP'ye çözümlenemiyor.",
+        "web_conn_fail": "[-] Sunucuya bağlanılamadı: {}",
+        "port_target_mode": "\nHedefi seçin:\n1. IP/URL'yi elle gir\n2. Ağıma bağlı cihazlardan birini seç",
+        "port_prompt": "Portları taranacak IP'yi veya URL'yi girin (örn: 192.168.1.1): ",
+        "port_profile_prompt": "\nTarama kapsamını seçin:\n1. Hızlı (12 yaygın port)\n2. Genişletilmiş (~80 port)\n3. Özel (aralık veya port numaraları girin)",
+        "port_custom_prompt": "Portları girin (örn: 1-1000 veya 22,80,443): ",
+        "port_limited": "[!] Ağ yükünü önlemek için tarama ilk {} port ile sınırlandı.",
+        "port_bad_target": "[-] Hata: Hedef IP'ye çözümlenemiyor.",
+        "port_scanning": "\n[*] Port radarı {} hedefine yönlendiriliyor ({} port)...",
+        "port_done": "\n[+] Taktik tarama tamamlandı! Port analizi:",
+        "port_protected": " (Korumalı)",
+        "banner_found": "Banner",
+        "cve_checking": "\n[*] Resmi NVD veritabanı üzerinden bilinen zafiyetler kontrol ediliyor (biraz sürebilir)...",
+        "cve_found": "  [!] '{}' banner'ı ile ilişkili olası zafiyetler:",
+        "cve_rate_limited": "  [-] NVD istek sınırına ulaşıldı, daha sonra tekrar deneyin veya API anahtarı kullanın.",
+        "ssl_info_title": "\n[*] SSL/TLS Sertifika Bilgisi:",
+        "ssl_issuer": "Veren Kurum",
+        "ssl_expires": "Bitiş Tarihi",
+        "ssl_days_left": "Kalan Gün",
+        "ssl_protocol": "Protokol",
+        "ssl_expired_warning": "  [!] UYARI: Sertifikanın süresi dolmuş!",
+        "ssl_expiring_soon": "  [!] UYARI: Sertifikanın süresi dolmak üzere!",
+        "ssl_unavailable": "  [-] Sertifika bilgisi alınamadı (HTTPS yok veya bağlantı başarısız).",
+        "dns_title": "\n[*] DNS Kayıtları:",
+        "dns_missing_lib": "  [-] dnspython yüklü değil. Etkinleştirmek için: pip install dnspython",
+        "dns_none": "Yok",
+        "subs_title": "\n[*] Alt alan adları aranıyor (Certificate Transparency)...",
+        "subs_found": "\n[+] {} alt alan adı bulundu:",
+        "subs_none": "  [-] Alt alan adı bulunamadı.",
+        "new_device": "\n  [!!!] UYARI: Önceki taramada olmayan yeni cihaz(lar):",
+        "missing_device": "\n[*] Daha önce görülen ancak şimdi görünmeyen cihazlar:",
+        "report_generating": "\n[*] Rapor oluşturuluyor...",
+        "report_saved": "[+] Rapor başarıyla kaydedildi:\n    JSON: {}\n    HTML: {}",
+        "report_empty": "[-] Bu oturumda henüz tarama verisi yok. Önce bir tarama yapın.",
+        "menu_7": "7. Hayalet Modu (Gizli) — Aç/Kapa",
+        "ghost_on": "\n[+] Hayalet modu açıldı: sabit hayalet MAC, kademeli TCP timestamp, rastgele gruplama, sahte L2 MAC, süreç adı gizlendi.",
+        "ghost_off": "\n[!] Hayalet modu kapatıldı — artık normal tarama.",
+        "ghost_status": "[i] Hayalet modu: ",
+        "ghost_egress_note": "[i] İpucu: Harici sorguları gerçek IP'den uzak tutmak için: set GHOST_PROXY=socks5h://127.0.0.1:9050 (Tor) veya set GHOST_NO_EXTERNAL=1",
+        "external_blocked": "[-] Giden trafik engellendi (GHOST_NO_EXTERNAL=1). Web sitesi keşfedilemiyor.",
+        "ssl_proxy_blocked": "  [-] Sertifika kontrolü yapılamıyor: proxy erişilemez ve IP açığa çıkmasın diye doğrudan TLS engellendi.",
+        "doh_failed": "  [!] DoH/proxy çözümlemesi başarısız — sızıntıyı önlemek için yerel DNS kullanılmadı."
+    }
+}
+

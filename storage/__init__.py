@@ -1,0 +1,1 @@
+"""Ghost Radar storage modules."""
